@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="zh-TW" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PMBus Linear11 / Linear16 簡易計算機</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        /* Strictly single-row 16-bit grid */
+        .bit-grid-16 {
+            display: grid;
+            grid-template-columns: repeat(16, minmax(0, 1fr));
+            gap: 3px;
+        }
+        .bit-cell {
+            user-select: none;
+            transition: all 0.1s ease;
+        }
+        .bit-cell:active {
+            transform: scale(0.92);
+        }
+        /* Hide spin buttons on number inputs for cleaner calculator look */
+        input[type=number]::-webkit-inner-spin-button,
+        input[type=number]::-webkit-outer-spin-button {
+            opacity: 1;
+        }
+    </style>
+</head>
+<body class="bg-slate-100 dark:bg-slate-950 text-slate-800 dark:text-slate-100 font-sans min-h-screen flex items-center justify-center p-3 sm:p-6 transition-colors duration-200">
+
+    <!-- Calculator Card -->
+    <main class="w-full max-w-[480px] bg-white dark:bg-slate-900 rounded-3xl shadow-2xl border border-slate-200/90 dark:border-slate-800 p-5 sm:p-6 space-y-5">
+
+        <!-- Header & Theme Toggle -->
+        <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2.5">
+                <div class="w-8 h-8 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-mono font-bold text-sm shadow-sm">
+                    PM
+                </div>
+                <div>
+                    <h1 class="text-base font-bold text-slate-900 dark:text-white leading-tight">PMBus 轉換計算機</h1>
+                    <p class="text-[11px] text-slate-400 font-mono">X = Y &times; 2<sup>N</sup> 任意欄位即時雙向轉換</p>
+                </div>
+            </div>
+            <button onclick="toggleTheme()" class="w-8 h-8 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center justify-center text-slate-600 dark:text-amber-400 transition" title="切換深淺色">
+                <svg id="icon-sun" class="w-4 h-4 hidden dark:block" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <circle cx="12" cy="12" r="5"></circle>
+                    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+                </svg>
+                <svg id="icon-moon" class="w-4 h-4 block dark:hidden" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+                </svg>
+            </button>
+        </div>
+
+        <!-- Mode Tabs: Linear11 vs Linear16 -->
+        <div class="grid grid-cols-2 gap-1.5 bg-slate-100 dark:bg-slate-800/90 p-1.5 rounded-2xl">
+            <button id="tab-l11" onclick="setMode('l11')" class="py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-sm">
+                Linear11 <span class="font-normal text-[11px] opacity-80">(通用感測)</span>
+            </button>
+            <button id="tab-l16" onclick="setMode('l16')" class="py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200">
+                Linear16 <span class="font-normal text-[11px] opacity-80">(VOUT 電壓)</span>
+            </button>
+        </div>
+
+        <!-- Formula & Live Result Screen -->
+        <div class="bg-slate-900 dark:bg-slate-950 text-white rounded-2xl p-4 border border-slate-800 shadow-inner space-y-1.5">
+            <div class="flex items-center justify-between text-[11px] font-mono text-slate-400">
+                <span id="screen-formula">Y(768) &times; 2^(-6)</span>
+                <span id="screen-lsb">LSB: 0.015625</span>
+            </div>
+            <div class="flex items-baseline justify-between gap-2">
+                <div class="text-xs text-slate-400 font-medium">對應實數 X =</div>
+                <div id="screen-val" class="text-2xl sm:text-3xl font-mono font-bold text-emerald-400 tracking-tight truncate">
+                    12
+                </div>
+            </div>
+            <div class="flex items-center justify-between text-[11px] font-mono pt-1 border-t border-slate-800/80">
+                <span id="screen-smbus" class="text-indigo-400">SMBus (Lo, Hi): 0x00, 0xD3</span>
+                <span id="screen-err" class="text-slate-400">誤差: 0.00%</span>
+            </div>
+        </div>
+
+        <!-- Main Bidirectional Input Fields -->
+        <div class="space-y-3.5">
+
+            <!-- Linear16 Specific Top Bar: UL16/SL16 & VOUT_MODE -->
+            <div id="l16-config-bar" class="hidden grid-cols-12 gap-2.5 p-3 rounded-2xl bg-indigo-500/5 dark:bg-indigo-500/10 border border-indigo-500/20">
+                <div class="col-span-5">
+                    <label class="block text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-1">格式類型</label>
+                    <div class="grid grid-cols-2 bg-slate-200/70 dark:bg-slate-800 p-0.5 rounded-lg text-[11px] font-mono font-semibold">
+                        <button id="btn-ul16" onclick="setL16Sign(false)" class="py-1 rounded-md bg-indigo-600 text-white">UL16 無號</button>
+                        <button id="btn-sl16" onclick="setL16Sign(true)" class="py-1 rounded-md text-slate-500 dark:text-slate-400">SL16 有號</button>
+                    </div>
+                </div>
+                <div class="col-span-4">
+                    <label class="block text-[11px] font-semibold text-amber-600 dark:text-amber-400 mb-1">VOUT_MODE (Hex)</label>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 pl-2.5 flex items-center text-slate-400 font-mono text-xs">0x</span>
+                        <input type="text" id="input-vout-mode" maxlength="2" value="17"
+                            oninput="onVoutModeInput(this.value)"
+                            class="w-full pl-7 pr-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono text-sm font-bold uppercase focus:outline-none focus:ring-2 focus:ring-amber-500">
+                    </div>
+                </div>
+                <div class="col-span-3">
+                    <label class="block text-[11px] font-semibold text-amber-600 dark:text-amber-400 mb-1">指數 N</label>
+                    <input type="number" id="input-l16-n" min="-16" max="15" value="-9"
+                        oninput="onExponentInput(this.value)"
+                        class="w-full px-2 py-1 rounded-lg bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 font-mono text-sm font-bold text-center focus:outline-none focus:ring-2 focus:ring-amber-500">
+                </div>
+            </div>
+
+            <!-- Row 1: Real Value X & Hex Value -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <!-- Real Value X -->
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-xs font-bold text-slate-700 dark:text-slate-300">實數值 X (十進位)</label>
+                        <!-- Auto N vs Lock N toggle for Linear11 -->
+                        <button id="btn-lock-n" onclick="toggleLockN()" class="text-[11px] font-mono px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition">
+                            自動最佳 N
+                        </button>
+                    </div>
+                    <input type="number" id="input-real" step="any" value="12"
+                        oninput="onRealInput(this.value)"
+                        placeholder="輸入數值..."
+                        class="w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 font-mono text-lg font-bold text-emerald-600 dark:text-emerald-400 focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                </div>
+
+                <!-- 16-bit Hex -->
+                <div>
+                    <div class="flex items-center justify-between mb-1">
+                        <label id="label-hex" class="text-xs font-bold text-slate-700 dark:text-slate-300">16-Bit Hex (十六進位)</label>
+                        <button onclick="copyHex()" id="btn-copy-hex" class="text-[11px] font-mono text-indigo-600 dark:text-indigo-400 hover:underline">
+                            複製 0xD300
+                        </button>
+                    </div>
+                    <div class="relative">
+                        <span class="absolute inset-y-0 left-0 pl-3.5 flex items-center text-slate-400 font-mono text-base font-bold">0x</span>
+                        <input type="text" id="input-hex" maxlength="4" value="D300"
+                            oninput="onHexInput(this.value)"
+                            placeholder="D300"
+                            class="w-full pl-9 pr-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/80 border border-slate-300 dark:border-slate-700 font-mono text-lg font-bold text-indigo-600 dark:text-indigo-400 uppercase focus:outline-none focus:ring-2 focus:ring-indigo-500">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Row 2: Exponent N & Mantissa Y -->
+            <div class="grid grid-cols-2 gap-3">
+                <!-- Exponent N (Linear11) -->
+                <div id="box-l11-n" class="p-3 rounded-2xl bg-amber-500/5 dark:bg-amber-500/10 border border-amber-500/25">
+                    <div class="flex items-center justify-between mb-1">
+                        <label class="text-xs font-bold text-amber-600 dark:text-amber-400">指數 N (5-bit)</label>
+                        <span id="badge-n-hex" class="text-[11px] font-mono text-amber-600/80 dark:text-amber-300">0x1A</span>
+                    </div>
+                    <input type="number" id="input-n" min="-16" max="15" value="-6"
+                        oninput="onExponentInput(this.value)"
+                        class="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-amber-500/30 font-mono text-base font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-amber-500">
+                    <div class="text-[10px] text-slate-400 font-mono mt-1">範圍: -16 ~ +15</div>
+                </div>
+
+                <!-- Mantissa Y -->
+                <div id="box-y" class="p-3 rounded-2xl bg-emerald-500/5 dark:bg-emerald-500/10 border border-emerald-500/25">
+                    <div class="flex items-center justify-between mb-1">
+                        <label id="label-y" class="text-xs font-bold text-emerald-600 dark:text-emerald-400">尾數 Y (11-bit)</label>
+                        <span id="badge-y-hex" class="text-[11px] font-mono text-emerald-600/80 dark:text-emerald-300">0x300</span>
+                    </div>
+                    <input type="number" id="input-y" min="-1024" max="1023" value="768"
+                        oninput="onMantissaInput(this.value)"
+                        class="w-full px-3 py-1.5 rounded-xl bg-white dark:bg-slate-900 border border-emerald-500/30 font-mono text-base font-bold text-slate-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-emerald-500">
+                    <div id="range-y-hint" class="text-[10px] text-slate-400 font-mono mt-1">範圍: -1024 ~ +1023</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Compact Single-Row 16-Bit Binary Bar -->
+        <div class="pt-1">
+            <div class="flex items-center justify-between text-[11px] font-mono mb-1.5">
+                <div id="bit-legend" class="flex items-center gap-3">
+                    <span class="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold">
+                        <span class="w-2 h-2 rounded-full bg-amber-500"></span>[15:11] 指數 N
+                    </span>
+                    <span class="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500"></span>[10:0] 尾數 Y
+                    </span>
+                </div>
+                <span class="text-slate-400">點擊位元切換 0/1</span>
+            </div>
+
+            <!-- Strictly 16 Columns on 1 Single Row -->
+            <div id="bit-row" class="bit-grid-16">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <!-- Quick Presets & Clear Row -->
+        <div class="pt-2 border-t border-slate-200/80 dark:border-slate-800 flex flex-wrap items-center justify-between gap-1.5">
+            <span class="text-[11px] text-slate-400 font-medium mr-1">快選：</span>
+            <button onclick="applyQuickValue(12)" class="flex-1 py-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-mono font-semibold transition">12V</button>
+            <button onclick="applyQuickValue(5)" class="flex-1 py-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-mono font-semibold transition">5.0V</button>
+            <button onclick="applyQuickValue(3.3)" class="flex-1 py-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-mono font-semibold transition">3.3V</button>
+            <button onclick="applyQuickValue(1.2)" class="flex-1 py-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-mono font-semibold transition">1.2V</button>
+            <button onclick="applyQuickValue(-2.5)" class="flex-1 py-1.5 px-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-mono font-semibold text-rose-500 transition">-2.5A</button>
+            <button onclick="clearAll()" class="py-1.5 px-2.5 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 text-xs font-mono font-bold transition">AC 清零</button>
+        </div>
+
+    </main>
+
+    <script>
+        // =====================================================================
+        // STATE
+        // =====================================================================
+        const state = {
+            mode: 'l11',        // 'l11' or 'l16'
+            lockN: false,       // In L11 mode: false = auto find best N, true = keep current N
+            l16Signed: false,   // false = UL16 (0..65535), true = SL16 (-32768..32767)
+            N: -6,              // 5-bit signed exponent (-16..15)
+            Y: 768,             // Mantissa (-1024..1023 for L11, 0..65535 or -32768..32767 for L16)
+            raw16: 0xD300,      // 16-bit register word
+            targetReal: 12      // Last entered target real value for error calculation
+        };
+
+        // =====================================================================
+        // TWO'S COMPLEMENT HELPERS
+        // =====================================================================
+        function uintToSigned(val, bits) {
+            const mask = (1 << bits) - 1;
+            const v = val & mask;
+            const signBit = 1 << (bits - 1);
+            return (v & signBit) ? (v - (1 << bits)) : v;
+        }
+
+        function signedToUint(val, bits) {
+            const mask = (1 << bits) - 1;
+            return (val < 0 ? (val + (1 << bits)) : val) & mask;
+        }
+
+        function toHex(val, len = 4) {
+            return (val >>> 0).toString(16).toUpperCase().padStart(len, '0');
+        }
+
+        function formatReal(num) {
+            if (!Number.isFinite(num)) return '0';
+            if (Math.abs(num) === 0) return '0';
+            return parseFloat(num.toFixed(7)).toString();
+        }
+
+        // =====================================================================
+        // PACK / UNPACK LOGIC
+        // =====================================================================
+        function syncRawFromNY() {
+            state.N = Math.max(-16, Math.min(15, Math.round(state.N)));
+            if (state.mode === 'l11') {
+                state.Y = Math.max(-1024, Math.min(1023, Math.round(state.Y)));
+                const nUint = signedToUint(state.N, 5);
+                const yUint = signedToUint(state.Y, 11);
+                state.raw16 = ((nUint << 11) | yUint) & 0xFFFF;
+            } else {
+                const minY = state.l16Signed ? -32768 : 0;
+                const maxY = state.l16Signed ? 32767 : 65535;
+                state.Y = Math.max(minY, Math.min(maxY, Math.round(state.Y)));
+                state.raw16 = state.l16Signed ? signedToUint(state.Y, 16) : (state.Y & 0xFFFF);
+            }
+        }
+
+        function syncNYFromRaw() {
+            const raw = state.raw16 & 0xFFFF;
+            if (state.mode === 'l11') {
+                state.N = uintToSigned((raw >>> 11) & 0x1F, 5);
+                state.Y = uintToSigned(raw & 0x7FF, 11);
+            } else {
+                state.Y = state.l16Signed ? uintToSigned(raw, 16) : raw;
+            }
+        }
+
+        // Find optimal (N, Y) in Linear11 for a given real value X
+        function findBestL11(targetX) {
+            if (targetX === 0) {
+                const n = state.lockN ? state.N : 0;
+                return { N: n, Y: 0 };
+            }
+            if (state.lockN) {
+                const lsb = Math.pow(2, state.N);
+                const y = Math.max(-1024, Math.min(1023, Math.round(targetX / lsb)));
+                return { N: state.N, Y: y };
+            }
+
+            let best = null;
+            for (let n = -16; n <= 15; n++) {
+                const lsb = Math.pow(2, n);
+                const idealY = targetX / lsb;
+                const overflow = (idealY < -1024.5 || idealY >= 1023.5);
+                const y = Math.max(-1024, Math.min(1023, Math.round(idealY)));
+                const actual = y * lsb;
+                const err = Math.abs(actual - targetX);
+
+                if (!overflow) {
+                    if (!best || err < best.err - 1e-12 || (Math.abs(err - best.err) <= 1e-12 && n < best.N)) {
+                        best = { N: n, Y: y, err, overflow: false };
+                    }
+                }
+            }
+            // Fallback if target exceeds all ranges
+            if (!best) {
+                const n = targetX > 0 ? 15 : 15;
+                const y = targetX > 0 ? 1023 : -1024;
+                best = { N: n, Y: y };
+            }
+            return best;
+        }
+
+        // =====================================================================
+        // INPUT EVENT HANDLERS
+        // =====================================================================
+        function onRealInput(valStr) {
+            const val = parseFloat(valStr);
+            if (isNaN(val)) return;
+            state.targetReal = val;
+
+            if (state.mode === 'l11') {
+                const best = findBestL11(val);
+                state.N = best.N;
+                state.Y = best.Y;
+            } else {
+                if (!state.l16Signed && val < 0) {
+                    // Automatically switch to signed SL16 if user enters negative number
+                    setL16Sign(true);
+                }
+                const lsb = Math.pow(2, state.N);
+                const minY = state.l16Signed ? -32768 : 0;
+                const maxY = state.l16Signed ? 32767 : 65535;
+                state.Y = Math.max(minY, Math.min(maxY, Math.round(val / lsb)));
+            }
+            syncRawFromNY();
+            renderUI('real');
+        }
+
+        function onHexInput(valStr) {
+            const clean = valStr.replace(/[^0-9a-fA-F]/g, '');
+            if (!clean) return;
+            state.raw16 = parseInt(clean, 16) & 0xFFFF;
+            syncNYFromRaw();
+            state.targetReal = state.Y * Math.pow(2, state.N);
+            renderUI('hex');
+        }
+
+        function onExponentInput(valStr) {
+            const n = parseInt(valStr, 10);
+            if (isNaN(n)) return;
+            state.N = Math.max(-16, Math.min(15, n));
+
+            if (state.mode === 'l16') {
+                // In L16 mode, changing N recalculates Y to keep Real Value X if lockN is not active,
+                // or updates Real Value X directly. Let's update Real Value X from (Y * 2^N)
+                syncRawFromNY();
+                state.targetReal = state.Y * Math.pow(2, state.N);
+            } else {
+                syncRawFromNY();
+                state.targetReal = state.Y * Math.pow(2, state.N);
+            }
+            renderUI('n');
+        }
+
+        function onMantissaInput(valStr) {
+            const y = parseInt(valStr, 10);
+            if (isNaN(y)) return;
+            state.Y = y;
+            syncRawFromNY();
+            state.targetReal = state.Y * Math.pow(2, state.N);
+            renderUI('y');
+        }
+
+        function onVoutModeInput(valStr) {
+            const clean = valStr.replace(/[^0-9a-fA-F]/g, '');
+            if (!clean) return;
+            const vm = parseInt(clean, 16) & 0xFF;
+            state.N = uintToSigned(vm & 0x1F, 5);
+            syncRawFromNY();
+            state.targetReal = state.Y * Math.pow(2, state.N);
+            renderUI('voutmode');
+        }
+
+        function toggleBit(bitIdx) {
+            state.raw16 ^= (1 << bitIdx);
+            syncNYFromRaw();
+            state.targetReal = state.Y * Math.pow(2, state.N);
+            renderUI('bit');
+        }
+
+        // =====================================================================
+        // MODE & SETTINGS HANDLERS
+        // =====================================================================
+        function setMode(mode) {
+            state.mode = mode;
+            const tabL11 = document.getElementById('tab-l11');
+            const tabL16 = document.getElementById('tab-l16');
+            const l16Bar = document.getElementById('l16-config-bar');
+            const boxL11N = document.getElementById('box-l11-n');
+            const boxY = document.getElementById('box-y');
+            const btnLockN = document.getElementById('btn-lock-n');
+
+            if (mode === 'l11') {
+                tabL11.className = 'py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all bg-white dark:bg-slate-900 text-amber-600 dark:text-amber-400 shadow-sm';
+                tabL16.className = 'py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200';
+                l16Bar.classList.add('hidden');
+                l16Bar.classList.remove('grid');
+                boxL11N.classList.remove('hidden');
+                boxY.classList.remove('col-span-2');
+                btnLockN.classList.remove('hidden');
+
+                // Re-encode current real value into L11
+                const best = findBestL11(state.targetReal);
+                state.N = best.N;
+                state.Y = best.Y;
+            } else {
+                tabL16.className = 'py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm';
+                tabL11.className = 'py-2 px-3 rounded-xl text-xs sm:text-sm font-bold transition-all text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200';
+                l16Bar.classList.remove('hidden');
+                l16Bar.classList.add('grid');
+                boxL11N.classList.add('hidden');
+                boxY.classList.add('col-span-2');
+                btnLockN.classList.add('hidden');
+
+                // Default to N = -9 (0x17) if N was positive or out of typical VOUT range
+                if (state.N > -4) state.N = -9;
+                if (state.targetReal < 0 && !state.l16Signed) setL16Sign(true);
+                const lsb = Math.pow(2, state.N);
+                const minY = state.l16Signed ? -32768 : 0;
+                const maxY = state.l16Signed ? 32767 : 65535;
+                state.Y = Math.max(minY, Math.min(maxY, Math.round(state.targetReal / lsb)));
+            }
+
+            syncRawFromNY();
+            renderUI();
+        }
+
+        function toggleLockN() {
+            state.lockN = !state.lockN;
+            const btn = document.getElementById('btn-lock-n');
+            if (state.lockN) {
+                btn.textContent = `鎖定 N=${state.N}`;
+                btn.className = 'text-[11px] font-mono px-2 py-0.5 rounded-md bg-amber-500 text-slate-950 font-bold transition';
+            } else {
+                btn.textContent = '自動最佳 N';
+                btn.className = 'text-[11px] font-mono px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 hover:bg-amber-500/25 transition';
+                onRealInput(document.getElementById('input-real').value);
+            }
+        }
+
+        function setL16Sign(isSigned) {
+            state.l16Signed = isSigned;
+            const btnUl = document.getElementById('btn-ul16');
+            const btnSl = document.getElementById('btn-sl16');
+            if (isSigned) {
+                btnSl.className = 'py-1 rounded-md bg-indigo-600 text-white';
+                btnUl.className = 'py-1 rounded-md text-slate-500 dark:text-slate-400';
+            } else {
+                btnUl.className = 'py-1 rounded-md bg-indigo-600 text-white';
+                btnSl.className = 'py-1 rounded-md text-slate-500 dark:text-slate-400';
+            }
+            syncNYFromRaw();
+            renderUI();
+        }
+
+        function applyQuickValue(val) {
+            state.targetReal = val;
+            document.getElementById('input-real').value = val;
+            onRealInput(val);
+        }
+
+        function clearAll() {
+            state.raw16 = 0;
+            state.Y = 0;
+            if (state.mode === 'l11' && !state.lockN) state.N = 0;
+            state.targetReal = 0;
+            renderUI();
+        }
+
+        // =====================================================================
+        // RENDER UI
+        // =====================================================================
+        function renderUI(activeSource = null) {
+            const lsb = Math.pow(2, state.N);
+            const actualVal = state.Y * lsb;
+            const hexStr = toHex(state.raw16, 4);
+            const loByte = toHex(state.raw16 & 0xFF, 2);
+            const hiByte = toHex((state.raw16 >>> 8) & 0xFF, 2);
+
+            // Top Screen Update
+            document.getElementById('screen-formula').textContent = `Y(${state.Y}) × 2^(${state.N})`;
+            document.getElementById('screen-lsb').textContent = `LSB: ${formatReal(lsb)}`;
+            document.getElementById('screen-val').textContent = formatReal(actualVal);
+            document.getElementById('screen-smbus').textContent = `SMBus (Lo, Hi): 0x${loByte}, 0x${hiByte}`;
+
+            const errPct = (state.targetReal !== 0)
+                ? (Math.abs(actualVal - state.targetReal) / Math.abs(state.targetReal)) * 100
+                : 0;
+            document.getElementById('screen-err').textContent = `誤差: ${errPct.toFixed(3)}%`;
+
+            // Inputs Update
+            if (activeSource !== 'real') {
+                document.getElementById('input-real').value = formatReal(actualVal);
+            }
+            if (activeSource !== 'hex') {
+                document.getElementById('input-hex').value = hexStr;
+            }
+            if (activeSource !== 'n') {
+                document.getElementById('input-n').value = state.N;
+                document.getElementById('input-l16-n').value = state.N;
+            }
+            if (activeSource !== 'y') {
+                document.getElementById('input-y').value = state.Y;
+            }
+            if (activeSource !== 'voutmode') {
+                const vmHex = toHex(signedToUint(state.N, 5), 2);
+                document.getElementById('input-vout-mode').value = vmHex;
+            }
+
+            if (state.lockN) {
+                document.getElementById('btn-lock-n').textContent = `鎖定 N=${state.N}`;
+            }
+
+            document.getElementById('btn-copy-hex').textContent = `複製 0x${hexStr}`;
+            document.getElementById('badge-n-hex').textContent = `0x${toHex(signedToUint(state.N, 5), 2)}`;
+
+            if (state.mode === 'l11') {
+                document.getElementById('label-y').textContent = '尾數 Y (11-bit 有號)';
+                document.getElementById('badge-y-hex').textContent = `0x${toHex(signedToUint(state.Y, 11), 3)}`;
+                document.getElementById('range-y-hint').textContent = '範圍: -1024 ~ +1023';
+                document.getElementById('bit-legend').innerHTML = `
+                    <span class="flex items-center gap-1 text-amber-600 dark:text-amber-400 font-semibold">
+                        <span class="w-2 h-2 rounded-full bg-amber-500"></span>[15:11] 指數 N
+                    </span>
+                    <span class="flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-semibold">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500"></span>[10:0] 尾數 Y
+                    </span>
+                `;
+            } else {
+                document.getElementById('label-y').textContent = state.l16Signed ? '尾數 Y (16-bit 有號 SL16)' : '尾數 Y (16-bit 無號 UL16)';
+                document.getElementById('badge-y-hex').textContent = `0x${hexStr}`;
+                document.getElementById('range-y-hint').textContent = state.l16Signed ? '範圍: -32768 ~ +32767' : '範圍: 0 ~ 65535';
+                document.getElementById('bit-legend').innerHTML = `
+                    <span class="flex items-center gap-1 text-indigo-600 dark:text-indigo-400 font-semibold">
+                        <span class="w-2 h-2 rounded-full bg-indigo-500"></span>[15:0] 16-Bit 尾數 Y (N 由 VOUT_MODE 設定)
+                    </span>
+                `;
+            }
+
+            renderBitRow();
+        }
+
+        function renderBitRow() {
+            const container = document.getElementById('bit-row');
+            container.innerHTML = '';
+
+            for (let b = 15; b >= 0; b--) {
+                const bit = (state.raw16 >>> b) & 1;
+                const isExpBit = (state.mode === 'l11' && b >= 11);
+
+                const btn = document.createElement('button');
+                btn.type = 'button';
+                btn.onclick = () => toggleBit(b);
+
+                let style = '';
+                if (isExpBit) {
+                    style = bit
+                        ? 'bg-amber-500 text-slate-950 border-amber-400 font-bold'
+                        : 'bg-amber-500/10 text-slate-500 dark:text-slate-400 border-amber-500/25 hover:bg-amber-500/20';
+                } else if (state.mode === 'l11') {
+                    style = bit
+                        ? 'bg-emerald-500 text-slate-950 border-emerald-400 font-bold'
+                        : 'bg-emerald-500/10 text-slate-500 dark:text-slate-400 border-emerald-500/25 hover:bg-emerald-500/20';
+                } else {
+                    style = bit
+                        ? 'bg-indigo-600 text-white border-indigo-500 font-bold'
+                        : 'bg-indigo-500/10 text-slate-500 dark:text-slate-400 border-indigo-500/25 hover:bg-indigo-500/20';
+                }
+
+                btn.className = `bit-cell flex flex-col items-center justify-center py-1 rounded-lg border font-mono ${style}`;
+                btn.innerHTML = `
+                    <span class="text-[9px] leading-none opacity-70">${b}</span>
+                    <span class="text-xs sm:text-sm leading-tight mt-0.5">${bit}</span>
+                `;
+                container.appendChild(btn);
+            }
+        }
+
+        function copyHex() {
+            const hexText = '0x' + toHex(state.raw16, 4);
+            const ta = document.createElement('textarea');
+            ta.value = hexText;
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            document.body.removeChild(ta);
+
+            const btn = document.getElementById('btn-copy-hex');
+            btn.textContent = '已複製!';
+            setTimeout(() => {
+                btn.textContent = `複製 ${hexText}`;
+            }, 1200);
+        }
+
+        function toggleTheme() {
+            document.documentElement.classList.toggle('dark');
+        }
+
+        window.onload = () => {
+            renderUI();
+        };
+    </script>
+</body>
+</html>
